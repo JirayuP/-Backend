@@ -26,6 +26,14 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/routes", routeRoutes);
 app.use("/api/tasks", taskRoutes);
 
+app.get("/", (req: Request, res: Response) => {
+  res.json({
+    service: "Smart Lunch Delivery Backend Server",
+    status: "running",
+    healthCheck: "/api/health",
+  });
+});
+
 app.get("/api/health", (req: Request, res: Response) => {
   res.json({
     status: "ok",
