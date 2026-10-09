@@ -1,0 +1,88 @@
+// Prisma Schema: ระบบจัดเส้นทางและแบ่งงานไรเดอร์อัจฉริยะ (ส่งด่วนมื้อเที่ยง)
+// ใช้ "mysql" (MariaDB / MySQL Server เช่น XAMPP)
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Customer {
+  id            Int      @id @default(autoincrement())
+  name          String
+  phone         String
+  addressDetail String   @map("address_detail")
+  latitude      Float
+  longitude     Float
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  orders        Order[]
+
+  @@map("customers")
+}
+
+model Order {
+  id          Int         @id @default(autoincrement())
+  customerId  Int         @map("customer_id")
+  boxAmount   Int         @map("box_amount") // ไม่เกิน 3 กล่อง
+  totalPrice  Float       @map("total_price") // boxAmount * 65.0
+  status      String      @default("PENDING") // 'PENDING', 'ASSIGNED', 'DELIVERED', 'CANCELLED'
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  customer    Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  taskItem    TaskItem?
+
+  @@map("orders")
+}
+
+model DeliveryTask {
+  id               Int        @id @default(autoincrement())
+  taskNumber       String     @unique @map("task_number") // Unique เช่น TASK-20261008-01
+  date             DateTime   @default(now())
+  departureTime    String     @default("11:30") @map("departure_time")
+  totalDistance    Float      @default(0.0) @map("total_distance") // กม.
+  estimatedMinutes Int        @default(0) @map("estimated_minutes") // นาที
+  totalBoxes       Int        @default(0) @map("total_boxes") // กล่อง
+  deliveryFee      Float      @default(0.0) @map("delivery_fee") // 15 + (2 * dist * boxes)
+  totalRevenue     Float      @default(0.0) @map("total_revenue") // boxes * 65
+  totalFoodCost    Float      @default(0.0) @map("total_food_cost") // boxes * 40
+  netProfit        Float      @default(0.0) @map("net_profit") // totalRevenue - totalFoodCost - deliveryFee
+  routeColor       String     @default("#EF4444") @map("route_color")
+  status           String     @default("PROPOSED") // 'PROPOSED', 'CONFIRMED', 'DELIVERED'
+  createdAt        DateTime   @default(now()) @map("created_at")
+
+  riderId          Int?       @map("rider_id")
+  rider            Rider?     @relation(fields: [riderId], references: [id])
+  items            TaskItem[]
+
+  @@map("delivery_tasks")
+}
+
+model TaskItem {
+  id             Int          @id @default(autoincrement())
+  taskId         Int          @map("task_id")
+  orderId        Int          @unique @map("order_id")
+  stopSequence   Int          @map("stop_sequence") // ลำดับ 1, 2, 3
+  estArrival     String?      @map("est_arrival") // เช่น "11:45"
+  actualArrival  DateTime?    @map("actual_arrival")
+  deliveryStatus String       @default("PENDING") @map("delivery_status") // 'PENDING', 'DELIVERED', 'FAILED'
+
+  task           DeliveryTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  order          Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("task_items")
+}
+
+model Rider {
+  id           Int            @id @default(autoincrement())
+  name         String
+  phone        String
+  vehiclePlate String?        @map("vehicle_plate")
+  status       String         @default("AVAILABLE") // 'AVAILABLE', 'ON_DUTY', 'OFFLINE'
+  tasks        DeliveryTask[]
+
+  @@map("riders")
+}
