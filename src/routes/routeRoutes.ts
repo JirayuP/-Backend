@@ -220,6 +220,109 @@ function isRetryableTransactionError(error: unknown): boolean {
   );
 }
 
+// โหลดใบงานที่ยืนยันแล้วของวันปัจจุบันกลับมาใช้หลังหน้าเจ้าของร้าน refresh
+router.get("/today", async (_req: Request, res: Response) => {
+  try {
+    const now = new Date();
+    const dayWindow = getBangkokDayWindow(now);
+    const savedTasks = await prisma.deliveryTask.findMany({
+      where: {
+        createdAt: { gte: dayWindow.start, lt: dayWindow.end },
+        status: { in: ["CONFIRMED", "IN_PROGRESS", "DELIVERED"] },
+      },
+      include: {
+        rider: true,
+        items: {
+          include: {
+            order: { include: { customer: true } },
+          },
+          orderBy: { stopSequence: "asc" },
+        },
+      },
+      orderBy: { id: "asc" },
+    });
+
+    const tasks = savedTasks.map((task) => {
+      let previousPoint: { latitude: number; longitude: number } =
+        BUSINESS_RULES.HUB;
+      const stops = task.items.map((item) => {
+        const destination = {
+          latitude: item.order.customer.latitude,
+          longitude: item.order.customer.longitude,
+        };
+        const distanceFromPrevKm =
+          VrpOptimizerService.calculateHaversineDistance(
+            previousPoint,
+            destination
+          );
+        previousPoint = destination;
+
+        return {
+          itemId: item.id,
+          orderId: item.orderId,
+          stopSequence: item.stopSequence,
+          customerName: item.order.customer.name,
+          customerPhone: item.order.customer.phone,
+          addressDetail: item.order.customer.addressDetail,
+          latitude: destination.latitude,
+          longitude: destination.longitude,
+          boxAmount: item.order.boxAmount,
+          itemPrice: item.order.totalPrice,
+          distanceFromPrevKm,
+          estArrival: item.estArrival ?? "-",
+          deliveryStatus: item.deliveryStatus,
+          navigationUrl: `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
+            `${destination.latitude},${destination.longitude}`
+          )}`,
+        };
+      });
+
+      return {
+        id: task.id,
+        taskNumber: task.taskNumber,
+        routeColor: task.routeColor,
+        totalDistanceKm: task.totalDistance,
+        estimatedMinutes: task.estimatedMinutes,
+        totalBoxes: task.totalBoxes,
+        deliveryFee: task.deliveryFee,
+        totalRevenue: task.totalRevenue,
+        totalFoodCost: task.totalFoodCost,
+        netProfit: task.netProfit,
+        isLate: task.estimatedMinutes > BUSINESS_RULES.MAX_ALLOWED_MINUTES,
+        status: task.status,
+        rider: task.rider
+          ? {
+              name: task.rider.name,
+              phone: task.rider.phone,
+              vehiclePlate: task.rider.vehiclePlate,
+            }
+          : null,
+        stops,
+        waypoints: [
+          [BUSINESS_RULES.HUB.latitude, BUSINESS_RULES.HUB.longitude] as [
+            number,
+            number,
+          ],
+          ...stops.map(
+            (stop) => [stop.latitude, stop.longitude] as [number, number]
+          ),
+        ],
+      };
+    });
+
+    return res.json({
+      strategy: "LOWEST_COST" as const,
+      strategyLabel: "ใบงานที่ปล่อยแล้ววันนี้",
+      summary: summarize(tasks, tasks.reduce((sum, task) => sum + task.stops.length, 0)),
+      hub: BUSINESS_RULES.HUB,
+      tasks,
+      alternatives: [],
+    });
+  } catch (error: unknown) {
+    return res.status(500).json({ error: getErrorMessage(error) });
+  }
+});
+
 async function saveAuthoritativeTasks(
   orderIds: readonly number[],
   strategy: RouteStrategy,
