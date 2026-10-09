@@ -1,6 +1,6 @@
 # 🚀 Smart Lunch Delivery - Backend API
 
-ระบบ Backend RESTful API พัฒนาด้วย Node.js, Express, TypeScript และ Prisma ORM สำหรับระบบจัดเส้นทางและแบ่งงานไรเดอร์อัจฉริยะ
+ระบบ Backend RESTful API พัฒนาด้วย Node.js, Express, TypeScript และ Prisma ORM สำหรับระบบจัดเส้นทางและแบ่งงานไรเดอร์อัจฉริยะ (พร้อมไฟล์คอนฟิกสำหรับ Railway และ Docker)
 
 ---
 
@@ -8,11 +8,44 @@
 - **Runtime:** Node.js (v18+)
 - **Framework:** Express.js (TypeScript)
 - **Database ORM:** Prisma ORM (MySQL / MariaDB)
-- **Containerization:** Docker & Docker Compose
+- **Platform Support:** Railway.app, Docker, Docker Compose, Linux VPS
 
 ---
 
-## ⚙️ การตั้งค่า Environment Variables (`.env`)
+## 🚂 วิธี Deploy บน Railway (railway.app) แบบ Step-by-Step
+
+โปรเจกต์นี้มีไฟล์ `railway.json`, `Dockerfile` และสคริปต์ Sync Database อัตโนมัติ (`scripts/start.js`) รองรับ Railway แบบ Zero-Config:
+
+### ขั้นตอนที่ 1: สร้าง Project & เพิ่ม MySQL บน Railway
+1. เข้าเว็บ [Railway.app](https://railway.app/) และล็อกอิน
+2. กด **"+ New Project"**
+3. เลือก **"Provision MySQL"** (Railway จะสร้างฐานข้อมูล MySQL ให้ทันที)
+
+### ขั้นตอนที่ 2: เพิ่ม Backend Service จาก GitHub
+1. ในโปรเจกต์เดิม กดปุ่ม **"+ Create"** หรือ **"+ New"**
+2. เลือก **"GitHub Repo"** แล้วเลือก **`JirayuP/-Backend`**
+
+### ขั้นตอนที่ 3: ตั้งค่า Environment Variables (เชื่อม Database)
+1. คลิกที่กล่องบริการ Backend ที่เพิ่งเพิ่ม
+2. ไปที่แท็บ **"Variables"**
+3. กด **"Add Reference"** หรือสร้างตัวแปร:
+   ```text
+   DATABASE_URL = ${{MySQL.MYSQL_URL}}
+   ```
+   *(หรือถ้าใช้ชื่อ `DATABASE_URL` จาก MySQL plugin ก็เลือกใส่ค่านั้นได้เลย)*
+4. Railway จะตั้งค่า `$PORT` ให้โดยอัตโนมัติ
+
+### ขั้นตอนที่ 4: สร้าง Public Domain เพื่อใช้งาน
+1. ไปที่แท็บ **"Settings"** ของบริการ Backend
+2. เลื่อนลงมาที่หัวข้อ **"Networking"** -> กดปุ่ม **"Generate Domain"**
+3. จะได้ URL เช่น: `https://backend-production-xxxx.up.railway.app`
+4. ตรวจสอบสถานะ Server ได้ที่: `https://<your-railway-url>/api/health`
+
+> **Note:** เมื่อ Deploy บน Railway สคริปต์ `scripts/start.js` จะรันคำสั่ง `npx prisma db push` เพื่อสร้างตารางฐานข้อมูลใน MySQL ให้โดยอัตโนมัติทันที!
+
+---
+
+## ⚙️ การตั้งค่า Environment Variables ในเครื่อง (`.env`)
 คัดลอกไฟล์ `.env.example` เป็น `.env`:
 ```bash
 PORT=3000
@@ -21,69 +54,26 @@ DATABASE_URL="mysql://root:password@localhost:3306/lunch_delivery"
 
 ---
 
-## 🚀 วิธีการ Deploy ผ่าน Server ต่างๆ
+## 🐳 วิธีการ Deploy ทางเลือกอื่นๆ
 
-### วิธีที่ 1: Deploy ด้วย Docker Compose (แนะนำสำหรับ VPS ทุกค่าย เช่น DigitalOcean, AWS EC2, Linode, Ubuntu Server)
-รันคำสั่งเดียว ระบบจะสร้างทั้ง Backend และ MySQL Database พร้อมใช้งาน:
+### วิธีที่ 1: Deploy ด้วย Docker Compose (บน VPS)
 ```bash
 docker compose up -d --build
 ```
-ตรวจสอบสถานะ:
+
+### วิธีที่ 2: รันด้วย PM2 บน Linux Server
 ```bash
-docker compose ps
-docker compose logs -f app
-```
-
----
-
-### วิธีที่ 2: Deploy ด้วย Docker Container เดียว (มี Database แยกอยู่แล้ว)
-```bash
-# 1. Build image
-docker build -t lunch-backend .
-
-# 2. Run container
-docker run -d \
-  -p 3000:3000 \
-  -e PORT=3000 \
-  -e DATABASE_URL="mysql://user:pass@host:3306/lunch_delivery" \
-  --name lunch_backend_container \
-  lunch-backend
-```
-
----
-
-### วิธีที่ 3: Deploy บน Cloud Platform (Render / Railway / Fly.io)
-1. **Render.com / Railway.app:**
-   - เชื่อมต่อ GitHub Repository
-   - กำหนด **Root Directory:** `.` (หรือ `backend`)
-   - **Build Command:** `npm install && npm run build`
-   - **Start Command:** `npm start`
-   - ตั้งค่า **Environment Variables:**
-     - `PORT`: `3000` (หรือตามที่ Cloud กำหนด)
-     - `DATABASE_URL`: `mysql://...` จาก Cloud Database (Aiven, PlanetScale, Railway MySQL, หรือ Supabase)
-
----
-
-### วิธีที่ 4: รันแบบ Manual บน Linux Server ด้วย PM2
-```bash
-# ติดตั้ง dependencies และ build
 npm install
 npm run build
-
-# รัน Migration / Push schema
 npx prisma db push
-
-# สตาร์ทด้วย PM2
-npm install -g pm2
 pm2 start dist/index.js --name "lunch-backend"
-pm2 save
 ```
 
 ---
 
 ## 📡 Health Check API
 ```http
-GET http://localhost:3000/api/health
+GET /api/health
 ```
 Response:
 ```json

@@ -37,7 +37,8 @@ RUN npx prisma generate
 
 # Copy built artifacts from builder
 COPY --from=builder /app/dist ./dist
+COPY scripts ./scripts
 
 EXPOSE 3000
 
-CMD ["node", "dist/index.js"]
+CMD ["node", "scripts/start.js"]

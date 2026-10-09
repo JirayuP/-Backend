@@ -6,7 +6,8 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "prisma generate && tsc",
-    "start": "node dist/index.js",
+    "start": "node scripts/start.js",
+    "start:bare": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push"

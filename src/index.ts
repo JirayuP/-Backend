@@ -10,12 +10,13 @@ import taskRoutes from "./routes/taskRoutes";
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(
   cors({
     origin: "*",
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 app.use(express.json());
@@ -33,9 +34,9 @@ app.get("/api/health", (req: Request, res: Response) => {
   });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`=======================================================`);
   console.log(`🚀 Smart Lunch Delivery Backend Server running on port ${PORT}`);
-  console.log(`📍 Endpoint: http://localhost:${PORT}/api/health`);
+  console.log(`📍 Endpoint: http://0.0.0.0:${PORT}/api/health`);
   console.log(`=======================================================`);
 });
