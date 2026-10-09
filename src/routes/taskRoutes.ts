@@ -93,6 +93,13 @@ router.get("/:taskNumber", async (req: Request, res: Response) => {
 router.get("/:taskNumber/qr", async (req: Request, res: Response) => {
   try {
     const taskNumber = String(req.params.taskNumber);
+    const task = await prisma.deliveryTask.findUnique({
+      where: { taskNumber },
+      select: { id: true, status: true },
+    });
+    if (!task) {
+      return res.status(404).json({ error: `ไม่พบใบงาน ${taskNumber}` });
+    }
     const qrDataUrl = await QrService.generateTaskQrCode(taskNumber);
     res.json({
       taskNumber,
@@ -119,6 +126,11 @@ router.post("/:taskNumber/checkin", async (req: Request, res: Response) => {
     if (!taskExists) {
       return res.status(404).json({ error: `ไม่พบใบงาน ${taskNumber}` });
     }
+    if (taskExists.status !== "CONFIRMED" || taskExists.riderId !== null) {
+      return res.status(409).json({
+        error: "ใบงานนี้ถูกรับไปแล้ว หรือยังไม่อยู่ในสถานะพร้อมรับงาน",
+      });
+    }
 
     // ค้นหาหรือสร้างไรเดอร์
     let rider = await prisma.rider.findFirst({
@@ -136,13 +148,32 @@ router.post("/:taskNumber/checkin", async (req: Request, res: Response) => {
       });
     }
 
-    // ผูกไรเดอร์เข้ากับ Task
-    const updatedTask = await prisma.deliveryTask.update({
-      where: { taskNumber },
+    const activeTask = await prisma.deliveryTask.findFirst({
+      where: {
+        riderId: rider.id,
+        status: "IN_PROGRESS",
+      },
+      select: { taskNumber: true },
+    });
+    if (activeTask) {
+      return res.status(409).json({
+        error: `ไรเดอร์มีใบงาน ${activeTask.taskNumber} ที่ยังส่งไม่เสร็จ`,
+      });
+    }
+
+    // Claim แบบ compare-and-set เพื่อป้องกันไรเดอร์สองคนรับใบงานเดียวกันพร้อมกัน
+    const claimedTask = await prisma.deliveryTask.updateMany({
+      where: { taskNumber, status: "CONFIRMED", riderId: null },
       data: {
         riderId: rider.id,
         status: "IN_PROGRESS",
       },
+    });
+    if (claimedTask.count !== 1) {
+      return res.status(409).json({ error: "ใบงานนี้มีไรเดอร์รับไปแล้ว" });
+    }
+    const updatedTask = await prisma.deliveryTask.findUnique({
+      where: { taskNumber },
       include: { rider: true },
     });
 
@@ -170,6 +201,14 @@ router.patch(
 
       if (!existingItem) {
         return res.status(404).json({ error: "ไม่พบรายการจุดส่งนี้" });
+      }
+
+      if (existingItem.task.taskNumber !== taskNumber) {
+        return res.status(404).json({ error: "จุดส่งไม่อยู่ในใบงานนี้" });
+      }
+
+      if (existingItem.task.status !== "IN_PROGRESS") {
+        return res.status(409).json({ error: "ใบงานไม่ได้อยู่ในสถานะกำลังจัดส่ง" });
       }
 
       if (!existingItem.task.riderId) {
@@ -221,7 +260,24 @@ router.patch(
 router.patch("/:taskNumber/status", async (req: Request, res: Response) => {
   try {
     const taskNumber = String(req.params.taskNumber);
-    const { status } = req.body;
+    const status = String(req.body?.status ?? "").toUpperCase();
+    const existing = await prisma.deliveryTask.findUnique({
+      where: { taskNumber },
+      select: { status: true },
+    });
+    if (!existing) return res.status(404).json({ error: `ไม่พบใบงาน ${taskNumber}` });
+
+    const allowedTransitions: Record<string, readonly string[]> = {
+      CONFIRMED: ["CANCELLED"],
+      IN_PROGRESS: ["DELIVERED", "CANCELLED"],
+      DELIVERED: [],
+      CANCELLED: [],
+    };
+    if (!allowedTransitions[existing.status]?.includes(status)) {
+      return res.status(409).json({
+        error: `เปลี่ยนสถานะจาก ${existing.status} เป็น ${status || "(ว่าง)"} ไม่ได้`,
+      });
+    }
 
     const task = await prisma.deliveryTask.update({
       where: { taskNumber },

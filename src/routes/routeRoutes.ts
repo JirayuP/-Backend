@@ -1,13 +1,334 @@
 import { Router, Request, Response } from "express";
+import { Prisma, DeliveryTask, TaskItem } from "@prisma/client";
 import { prisma } from "../db/prisma";
-import { VrpOptimizerService, ProposedTask } from "../services/vrpOptimizer";
-import { QrService } from "../services/qrService";
+import {
+  ProposedTask,
+  RouteStrategy,
+  VrpOptimizerService,
+} from "../services/vrpOptimizer";
 import { BUSINESS_RULES } from "../constants";
 
 const router = Router();
 
+const BANGKOK_UTC_OFFSET_MS = 7 * 60 * 60 * 1000;
+const MAX_TRANSACTION_ATTEMPTS = 3;
+
+type SavedTask = DeliveryTask & { items: TaskItem[] };
+
+interface OptimizationSummary {
+  totalOrders: number;
+  totalTasks: number;
+  totalBoxes: number;
+  totalDistanceKm: number;
+  totalRevenue: number;
+  totalFoodCost: number;
+  totalRiderFee: number;
+  netProfit: number;
+  allDeliveredOnTime: boolean;
+  departureTime: string;
+  deadlineTime: string;
+}
+
+const STRATEGY_METADATA: Readonly<
+  Record<RouteStrategy, { label: string; description: string }>
+> = {
+  LOWEST_COST: {
+    label: "ค่าจ้างต่ำสุด",
+    description: "แบ่งงานตามต้นทุนรวมจริง โดยยังส่งทันเวลา",
+  },
+  FASTEST: {
+    label: "ส่งเร็วสุด",
+    description: "แยกหนึ่งออเดอร์ต่อไรเดอร์ เพื่อลดเวลาของแต่ละเส้นทาง",
+  },
+  FEWEST_RIDERS: {
+    label: "ใช้ไรเดอร์น้อยสุด",
+    description: `รวมงานสูงสุด ${BUSINESS_RULES.MAX_ORDERS_PER_RIDER} ออเดอร์ต่อไรเดอร์`,
+  },
+};
+
+const ROUTE_STRATEGIES = Object.keys(STRATEGY_METADATA) as RouteStrategy[];
+
+class RequestError extends Error {
+  public constructor(
+    public readonly statusCode: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "RequestError";
+  }
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
+function getBangkokDayWindow(date: Date): { start: Date; end: Date } {
+  const bangkokDate = new Date(date.getTime() + BANGKOK_UTC_OFFSET_MS);
+  const startUtcMs =
+    Date.UTC(
+      bangkokDate.getUTCFullYear(),
+      bangkokDate.getUTCMonth(),
+      bangkokDate.getUTCDate()
+    ) - BANGKOK_UTC_OFFSET_MS;
+  return {
+    start: new Date(startUtcMs),
+    end: new Date(startUtcMs + 24 * 60 * 60 * 1000),
+  };
+}
+
+function parseStrategy(value: unknown): RouteStrategy {
+  if (value === undefined) return "LOWEST_COST";
+  if (
+    typeof value === "string" &&
+    ROUTE_STRATEGIES.includes(value as RouteStrategy)
+  ) {
+    return value as RouteStrategy;
+  }
+  throw new RequestError(400, "Unknown route strategy");
+}
+
+function extractConfirmation(body: unknown): {
+  orderIds: number[];
+  strategy: RouteStrategy;
+} {
+  if (typeof body !== "object" || body === null || !("tasks" in body)) {
+    throw new RequestError(400, "Request body must contain tasks");
+  }
+
+  const requestBody = body as { tasks?: unknown; strategy?: unknown };
+  const tasks = requestBody.tasks;
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    throw new RequestError(400, "At least one task is required");
+  }
+
+  const orderIds: number[] = [];
+  for (const task of tasks) {
+    if (typeof task !== "object" || task === null || !("stops" in task)) {
+      throw new RequestError(400, "Every task must contain stops");
+    }
+
+    const stops = (task as { stops?: unknown }).stops;
+    if (
+      !Array.isArray(stops) ||
+      stops.length === 0 ||
+      stops.length > BUSINESS_RULES.MAX_ORDERS_PER_RIDER
+    ) {
+      throw new RequestError(
+        400,
+        `Each task must contain 1-${BUSINESS_RULES.MAX_ORDERS_PER_RIDER} stops`
+      );
+    }
+
+    for (const stop of stops) {
+      if (typeof stop !== "object" || stop === null || !("orderId" in stop)) {
+        throw new RequestError(400, "Every stop must contain orderId");
+      }
+      const orderId = (stop as { orderId?: unknown }).orderId;
+      if (!Number.isSafeInteger(orderId) || Number(orderId) <= 0) {
+        throw new RequestError(400, "orderId must be a positive integer");
+      }
+      orderIds.push(Number(orderId));
+    }
+  }
+
+  if (new Set(orderIds).size !== orderIds.length) {
+    throw new RequestError(400, "An order may appear in only one task");
+  }
+  return { orderIds, strategy: parseStrategy(requestBody.strategy) };
+}
+
+function summarize(
+  tasks: readonly ProposedTask[],
+  totalOrders: number
+): OptimizationSummary {
+  const totals = tasks.reduce(
+    (summary, task) => ({
+      totalBoxes: summary.totalBoxes + task.totalBoxes,
+      totalDistanceKm: summary.totalDistanceKm + task.totalDistanceKm,
+      totalRevenue: summary.totalRevenue + task.totalRevenue,
+      totalFoodCost: summary.totalFoodCost + task.totalFoodCost,
+      totalRiderFee: summary.totalRiderFee + task.deliveryFee,
+      hasLateTask: summary.hasLateTask || task.isLate,
+    }),
+    {
+      totalBoxes: 0,
+      totalDistanceKm: 0,
+      totalRevenue: 0,
+      totalFoodCost: 0,
+      totalRiderFee: 0,
+      hasLateTask: false,
+    }
+  );
+
+  return {
+    totalOrders,
+    totalTasks: tasks.length,
+    totalBoxes: totals.totalBoxes,
+    totalDistanceKm: Math.round(totals.totalDistanceKm * 100) / 100,
+    totalRevenue: totals.totalRevenue,
+    totalFoodCost: totals.totalFoodCost,
+    totalRiderFee: Math.round(totals.totalRiderFee * 100) / 100,
+    netProfit:
+      Math.round(
+        (totals.totalRevenue - totals.totalFoodCost - totals.totalRiderFee) * 100
+      ) / 100,
+    allDeliveredOnTime: !totals.hasLateTask,
+    departureTime: BUSINESS_RULES.DEPARTURE_TIME,
+    deadlineTime: BUSINESS_RULES.DEADLINE_TIME,
+  };
+}
+
+function createResult(
+  pendingOrders: Parameters<typeof VrpOptimizerService.optimizeRoutes>[0],
+  startSequence: number,
+  optimizationTime: Date,
+  selectedStrategy: RouteStrategy
+) {
+  const alternatives = ROUTE_STRATEGIES.map((strategy) => {
+    const tasks = VrpOptimizerService.optimizeRoutes(
+      pendingOrders,
+      startSequence,
+      optimizationTime,
+      strategy
+    );
+    return {
+      strategy,
+      ...STRATEGY_METADATA[strategy],
+      summary: summarize(tasks, pendingOrders.length),
+      tasks,
+    };
+  });
+  const selected = alternatives.find(
+    (alternative) => alternative.strategy === selectedStrategy
+  );
+  if (!selected) throw new Error("Selected route strategy was not generated");
+
+  return {
+    strategy: selected.strategy,
+    strategyLabel: selected.label,
+    summary: selected.summary,
+    hub: BUSINESS_RULES.HUB,
+    tasks: selected.tasks,
+    alternatives,
+  };
+}
+
+function isRetryableTransactionError(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    (error.code === "P2034" || error.code === "P2002")
+  );
+}
+
+async function saveAuthoritativeTasks(
+  orderIds: readonly number[],
+  strategy: RouteStrategy,
+  now: Date
+): Promise<{ savedTasks: SavedTask[]; calculatedTasks: ProposedTask[] }> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt += 1) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          const pendingOrders = await tx.order.findMany({
+            where: { id: { in: [...orderIds] }, status: "PENDING" },
+            include: { customer: true },
+          });
+
+          if (pendingOrders.length !== orderIds.length) {
+            throw new RequestError(
+              409,
+              "Some orders are no longer pending. Run optimization again."
+            );
+          }
+
+          // Claim every order atomically. A stale/concurrent confirmation must
+          // never delete or reassign an existing TaskItem.
+          const claimed = await tx.order.updateMany({
+            where: { id: { in: [...orderIds] }, status: "PENDING" },
+            data: { status: "ASSIGNED" },
+          });
+          if (claimed.count !== orderIds.length) {
+            throw new RequestError(
+              409,
+              "Orders were assigned by another request. Run optimization again."
+            );
+          }
+
+          const dayWindow = getBangkokDayWindow(now);
+          const existingTasksToday = await tx.deliveryTask.count({
+            where: {
+              createdAt: { gte: dayWindow.start, lt: dayWindow.end },
+            },
+          });
+          const calculatedTasks = VrpOptimizerService.optimizeRoutes(
+            pendingOrders,
+            existingTasksToday + 1,
+            now,
+            strategy
+          );
+
+          // The SLA is authoritative: never persist a plan whose final stop
+          // (including service time) finishes after 12:30.
+          if (calculatedTasks.some((task) => task.isLate)) {
+            throw new RequestError(
+              422,
+              "The selected plan cannot deliver every order by 12:30"
+            );
+          }
+          const savedTasks: SavedTask[] = [];
+
+          for (const task of calculatedTasks) {
+            const taskRecord = await tx.deliveryTask.create({
+              data: {
+                taskNumber: task.taskNumber,
+                date: now,
+                departureTime: BUSINESS_RULES.DEPARTURE_TIME,
+                totalDistance: task.totalDistanceKm,
+                estimatedMinutes: task.estimatedMinutes,
+                totalBoxes: task.totalBoxes,
+                deliveryFee: task.deliveryFee,
+                totalRevenue: task.totalRevenue,
+                totalFoodCost: task.totalFoodCost,
+                netProfit: task.netProfit,
+                routeColor: task.routeColor,
+                status: "CONFIRMED",
+                items: {
+                  create: task.stops.map((stop) => ({
+                    orderId: stop.orderId,
+                    stopSequence: stop.stopSequence,
+                    estArrival: stop.estArrival,
+                    deliveryStatus: "PENDING",
+                  })),
+                },
+              },
+              include: { items: true },
+            });
+            savedTasks.push(taskRecord);
+          }
+
+          return { savedTasks, calculatedTasks };
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 15_000,
+          timeout: 60_000,
+        }
+      );
+    } catch (error: unknown) {
+      lastError = error;
+      if (!isRetryableTransactionError(error) || attempt === MAX_TRANSACTION_ATTEMPTS) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 // 1. คำนวณจัดเส้นทางและแบ่งงานไรเดอร์ (Route Optimization)
-router.post("/optimize", async (req: Request, res: Response) => {
+router.post("/optimize", async (_req: Request, res: Response) => {
   try {
     // ดึงออเดอร์ที่ยังไม่ได้จัดสรร (สถานะ PENDING)
     const pendingOrders = await prisma.order.findMany({
@@ -22,151 +343,72 @@ router.post("/optimize", async (req: Request, res: Response) => {
     }
 
     // คำนวณลำดับใบงานของวันนี้ เพื่อป้องกัน taskNumber ชนกัน
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    const optimizationTime = new Date();
+    const dayWindow = getBangkokDayWindow(optimizationTime);
     const existingTasksToday = await prisma.deliveryTask.count({
       where: {
-        createdAt: { gte: todayStart },
+        createdAt: { gte: dayWindow.start, lt: dayWindow.end },
       },
     });
 
     // ประมวลผลด้วย VRP & TSP 2-Opt Algorithm
-    const proposedTasks: ProposedTask[] = VrpOptimizerService.optimizeRoutes(
-      pendingOrders as any,
-      existingTasksToday + 1
+    return res.json(
+      createResult(
+        pendingOrders,
+        existingTasksToday + 1,
+        optimizationTime,
+        "LOWEST_COST"
+      )
     );
-
-    // รวมสถิติภาพรวมทางการเงินและเวลา
-    let totalRevenue = 0;
-    let totalFoodCost = 0;
-    let totalRiderFee = 0;
-    let totalDistanceKm = 0;
-    let totalBoxes = 0;
-    let hasLateTask = false;
-
-    proposedTasks.forEach((t) => {
-      totalRevenue += t.totalRevenue;
-      totalFoodCost += t.totalFoodCost;
-      totalRiderFee += t.deliveryFee;
-      totalDistanceKm += t.totalDistanceKm;
-      totalBoxes += t.totalBoxes;
-      if (t.isLate) hasLateTask = true;
-    });
-
-    const netProfit =
-      Math.round((totalRevenue - totalFoodCost - totalRiderFee) * 100) / 100;
-
-    res.json({
-      summary: {
-        totalOrders: pendingOrders.length,
-        totalTasks: proposedTasks.length,
-        totalBoxes,
-        totalDistanceKm: Math.round(totalDistanceKm * 100) / 100,
-        totalRevenue,
-        totalFoodCost,
-        totalRiderFee: Math.round(totalRiderFee * 100) / 100,
-        netProfit,
-        allDeliveredOnTime: !hasLateTask,
-        departureTime: BUSINESS_RULES.DEPARTURE_TIME,
-        deadlineTime: BUSINESS_RULES.DEADLINE_TIME,
-      },
-      hub: BUSINESS_RULES.HUB,
-      tasks: proposedTasks,
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (error: unknown) {
+    const statusCode =
+      error instanceof RequestError
+        ? error.statusCode
+        : error instanceof RangeError
+          ? 422
+          : 500;
+    return res.status(statusCode).json({ error: getErrorMessage(error) });
   }
 });
 
 // 2. ยืนยันการจัดงานและบันทึกลงฐานข้อมูล (Confirm & Dispatch)
 router.post("/confirm", async (req: Request, res: Response) => {
   try {
-    const { tasks }: { tasks: ProposedTask[] } = req.body;
-    if (!tasks || tasks.length === 0) {
-      return res.status(400).json({ error: "ไม่พบข้อมูล Task สำหรับยืนยัน" });
-    }
-
-    const savedTasks: any[] = [];
-
-    // ดำเนินการบันทึกด้วย Transaction (เพิ่ม timeout เป็น 60 วินาทีเพื่อรองรับ Cloud DB และลดจำนวน Round trips)
-    await prisma.$transaction(
-      async (tx: any) => {
-        for (let i = 0; i < tasks.length; i++) {
-          const t = tasks[i];
-
-          // ตรวจสอบความซ้ำซ้อนของ taskNumber
-          let uniqueTaskNumber = t.taskNumber;
-          const existingTask = await tx.deliveryTask.findUnique({
-            where: { taskNumber: uniqueTaskNumber },
-          });
-
-          if (existingTask) {
-            const timestamp = Date.now().toString().slice(-4);
-            uniqueTaskNumber = `${t.taskNumber}-${timestamp}-${i + 1}`;
-          }
-
-          const orderIds = (t.stops || []).map((s) => s.orderId);
-
-          // ล้าง TaskItem เก่าของออเดอร์ในรอบนี้แบบ Batch
-          if (orderIds.length > 0) {
-            await tx.taskItem.deleteMany({
-              where: { orderId: { in: orderIds } },
-            });
-          }
-
-          // สร้าง DeliveryTask พร้อม TaskItems ในคำสั่งเดียว (Nested create)
-          const taskRecord = await tx.deliveryTask.create({
-            data: {
-              taskNumber: uniqueTaskNumber,
-              date: new Date(),
-              departureTime: BUSINESS_RULES.DEPARTURE_TIME,
-              totalDistance: t.totalDistanceKm,
-              estimatedMinutes: t.estimatedMinutes,
-              totalBoxes: t.totalBoxes,
-              deliveryFee: t.deliveryFee,
-              totalRevenue: t.totalRevenue,
-              totalFoodCost: t.totalFoodCost,
-              netProfit: t.netProfit,
-              routeColor: t.routeColor,
-              status: "CONFIRMED",
-              items: {
-                create: (t.stops || []).map((stop) => ({
-                  orderId: stop.orderId,
-                  stopSequence: stop.stopSequence,
-                  estArrival: stop.estArrival,
-                  deliveryStatus: "PENDING",
-                })),
-              },
-            },
-            include: {
-              items: true,
-            },
-          });
-
-          // อัปเดตสถานะออเดอร์เป็น 'ASSIGNED' พร้อมกันในครั้งเดียว (Batch update)
-          if (orderIds.length > 0) {
-            await tx.order.updateMany({
-              where: { id: { in: orderIds } },
-              data: { status: "ASSIGNED" },
-            });
-          }
-
-          savedTasks.push(taskRecord);
-        }
-      },
-      {
-        maxWait: 15000,
-        timeout: 60000,
-      }
+    const { orderIds, strategy } = extractConfirmation(req.body);
+    const now = new Date();
+    const { savedTasks, calculatedTasks } = await saveAuthoritativeTasks(
+      orderIds,
+      strategy,
+      now
     );
 
-    res.status(201).json({
-      message: `ยืนยันและปล่อยงานสำเร็จจำนวน ${savedTasks.length} ใบงาน`,
-      tasks: savedTasks,
+    const confirmedTasks = calculatedTasks.map((task, index) => ({
+      ...task,
+      id: savedTasks[index].id,
+      taskNumber: savedTasks[index].taskNumber,
+    }));
+
+    const metadata = STRATEGY_METADATA[strategy];
+    return res.status(201).json({
+      message: `Confirmed and dispatched ${savedTasks.length} tasks`,
+      result: {
+        strategy,
+        strategyLabel: metadata.label,
+        summary: summarize(confirmedTasks, orderIds.length),
+        hub: BUSINESS_RULES.HUB,
+        tasks: confirmedTasks,
+        alternatives: [],
+      },
     });
-  } catch (err: any) {
-    console.error("Error in /confirm:", err);
-    res.status(500).json({ error: err.message });
+  } catch (error: unknown) {
+    console.error("Error in /confirm:", error);
+    const statusCode =
+      error instanceof RequestError
+        ? error.statusCode
+        : error instanceof RangeError
+          ? 422
+          : 500;
+    return res.status(statusCode).json({ error: getErrorMessage(error) });
   }
 });
 

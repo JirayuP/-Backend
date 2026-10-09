@@ -120,7 +120,7 @@ router.post("/", async (req: Request, res: Response) => {
     const { customerId, boxAmount } = req.body;
     const numBoxes = Number(boxAmount);
 
-    if (!customerId || isNaN(numBoxes) || numBoxes < 1 || numBoxes > 3) {
+    if (!Number.isSafeInteger(Number(customerId)) || !Number.isInteger(numBoxes) || numBoxes < 1 || numBoxes > 3) {
       return res.status(400).json({
         error: "กรุณาระบุ customerId และจำนวนกล่อง (boxAmount) ระหว่าง 1 ถึง 3 กล่อง",
       });
@@ -131,6 +131,13 @@ router.post("/", async (req: Request, res: Response) => {
     });
     if (!customer) {
       return res.status(404).json({ error: `ไม่พบข้อมูลลูกค้า ID ${customerId}` });
+    }
+
+    const distanceFromHubKm = calculateStraightDistanceKm(BUSINESS_RULES.HUB, customer);
+    if (distanceFromHubKm > BUSINESS_RULES.HUB.radiusKm) {
+      return res.status(422).json({
+        error: `ลูกค้าอยู่นอกรัศมี ${BUSINESS_RULES.HUB.radiusKm} กม. จากร้าน`,
+      });
     }
 
     const order = await prisma.order.create({
@@ -173,9 +180,14 @@ const updateOrderHandler = async (req: Request, res: Response) => {
 
     if (boxAmount !== undefined) {
       const numBoxes = Number(boxAmount);
-      if (isNaN(numBoxes) || numBoxes < 1 || numBoxes > 3) {
+      if (!Number.isInteger(numBoxes) || numBoxes < 1 || numBoxes > 3) {
         return res.status(400).json({
           error: "จำนวนกล่องต้องอยู่ระหว่าง 1 ถึง 3 กล่อง",
+        });
+      }
+      if (existingOrder.status !== "PENDING") {
+        return res.status(409).json({
+          error: "แก้จำนวนกล่องไม่ได้หลังจากออเดอร์ถูกจัดสรรแล้ว",
         });
       }
       updateData.boxAmount = numBoxes;
@@ -183,7 +195,14 @@ const updateOrderHandler = async (req: Request, res: Response) => {
     }
 
     if (status !== undefined) {
-      updateData.status = String(status).toUpperCase();
+      const normalizedStatus = String(status).toUpperCase();
+      const allowedStatuses = ["PENDING", "CANCELLED"];
+      if (!allowedStatuses.includes(normalizedStatus) || existingOrder.status !== "PENDING") {
+        return res.status(409).json({
+          error: "เปลี่ยนสถานะด้วยหน้านี้ได้เฉพาะ PENDING เป็น CANCELLED เท่านั้น",
+        });
+      }
+      updateData.status = normalizedStatus;
     }
 
     const updatedOrder = await prisma.order.update({
@@ -216,9 +235,12 @@ router.delete("/:id", async (req: Request, res: Response) => {
       return res.status(404).json({ error: `ไม่พบออเดอร์ ID ${id}` });
     }
 
-    await prisma.taskItem.deleteMany({
-      where: { orderId: id },
-    });
+    if (existing.status !== "PENDING") {
+      return res.status(409).json({
+        error: "ลบได้เฉพาะออเดอร์ที่ยังเป็น PENDING เพื่อรักษาประวัติใบงาน",
+      });
+    }
+
     await prisma.order.delete({
       where: { id },
     });
@@ -259,10 +281,6 @@ router.delete("/", async (req: Request, res: Response) => {
 router.post("/seed", async (req: Request, res: Response) => {
   try {
     // ล้างข้อมูลออเดอร์และใบงานเก่า
-    await prisma.taskItem.deleteMany();
-    await prisma.deliveryTask.deleteMany();
-    await prisma.order.deleteMany();
-
     const hub = BUSINESS_RULES.HUB;
 
     // รายชื่อลูกค้าจำลอง 30 คน ครอบคลุมหอพัก-คณะต่างๆ รอบ มมส. ขามเรียง ในรัศมี 0.5 - 2.8 กม.

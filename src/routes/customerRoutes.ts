@@ -5,6 +5,27 @@ import { calculateStraightDistanceKm } from "../utils/geo";
 
 const router = Router();
 
+function validateServiceCoordinates(latitude: number, longitude: number): string | null {
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    return "พิกัด latitude/longitude ไม่ถูกต้อง";
+  }
+
+  const distanceKm = calculateStraightDistanceKm(BUSINESS_RULES.HUB, {
+    latitude,
+    longitude,
+  });
+  return distanceKm > BUSINESS_RULES.HUB.radiusKm
+    ? `ที่อยู่ต้องอยู่ภายในรัศมี ${BUSINESS_RULES.HUB.radiusKm} กม. จากร้าน (พิกัดนี้ห่าง ${distanceKm} กม.)`
+    : null;
+}
+
 // ========================================================
 // 1. ค้นหาลูกค้าในระยะทางที่กำหนด (เช่น 1 กิโลเมตร)
 // GET /api/customers/nearby?lat=16.246825&lng=103.252072&radius=1
@@ -165,9 +186,8 @@ router.post("/", async (req: Request, res: Response) => {
     const lat = parseFloat(String(latitude));
     const lng = parseFloat(String(longitude));
 
-    if (isNaN(lat) || isNaN(lng)) {
-      return res.status(400).json({ error: "พิกัด latitude และ longitude ต้องเป็นตัวเลข" });
-    }
+    const coordinateError = validateServiceCoordinates(lat, lng);
+    if (coordinateError) return res.status(400).json({ error: coordinateError });
 
     const newCustomer = await prisma.customer.create({
       data: {
@@ -202,12 +222,23 @@ const updateCustomerHandler = async (req: Request, res: Response) => {
       return res.status(404).json({ error: `ไม่พบข้อมูลลูกค้า ID ${id}` });
     }
 
-    const updateData: any = {};
+    const nextLatitude = latitude === undefined ? existing.latitude : Number(latitude);
+    const nextLongitude = longitude === undefined ? existing.longitude : Number(longitude);
+    const coordinateError = validateServiceCoordinates(nextLatitude, nextLongitude);
+    if (coordinateError) return res.status(400).json({ error: coordinateError });
+
+    const updateData: {
+      name?: string;
+      phone?: string;
+      addressDetail?: string;
+      latitude?: number;
+      longitude?: number;
+    } = {};
     if (name !== undefined) updateData.name = String(name).trim();
     if (phone !== undefined) updateData.phone = String(phone).trim();
     if (addressDetail !== undefined) updateData.addressDetail = String(addressDetail).trim();
-    if (latitude !== undefined) updateData.latitude = parseFloat(String(latitude));
-    if (longitude !== undefined) updateData.longitude = parseFloat(String(longitude));
+    if (latitude !== undefined) updateData.latitude = nextLatitude;
+    if (longitude !== undefined) updateData.longitude = nextLongitude;
 
     const updated = await prisma.customer.update({
       where: { id },
@@ -243,14 +274,9 @@ router.delete("/:id", async (req: Request, res: Response) => {
       return res.status(404).json({ error: `ไม่พบข้อมูลลูกค้า ID ${id}` });
     }
 
-    // ล้าง task items ของออเดอร์ของลูกค้านี้ออกก่อน เพื่อความปลอดภัย
-    const orderIds = (existing.orders as any[]).map((o: any) => o.id);
-    if (orderIds.length > 0) {
-      await prisma.taskItem.deleteMany({
-        where: { orderId: { in: orderIds } },
-      });
-      await prisma.order.deleteMany({
-        where: { customerId: id },
+    if (existing.orders.length > 0) {
+      return res.status(409).json({
+        error: "ลบลูกค้าไม่ได้ เนื่องจากมีประวัติออเดอร์ กรุณาลบเฉพาะออเดอร์ PENDING ก่อน",
       });
     }
 
