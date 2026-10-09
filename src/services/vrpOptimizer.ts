@@ -1,5 +1,15 @@
 import { BUSINESS_RULES } from "../constants";
 
+const BANGKOK_UTC_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+export function formatBangkokDateKey(date: Date = new Date()): string {
+  const bangkokDate = new Date(date.getTime() + BANGKOK_UTC_OFFSET_MS);
+  const year = bangkokDate.getUTCFullYear();
+  const month = String(bangkokDate.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(bangkokDate.getUTCDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
 export interface GeoPoint {
   latitude: number;
   longitude: number;
@@ -54,6 +64,10 @@ export class VrpOptimizerService {
    * คำนวณระยะทางแบบ Haversine Distance (กิโลเมตร)
    */
   public static calculateHaversineDistance(p1: GeoPoint, p2: GeoPoint): number {
+    return Math.round(this.calculateRoadDistanceKm(p1, p2) * 100) / 100;
+  }
+
+  private static calculateRoadDistanceKm(p1: GeoPoint, p2: GeoPoint): number {
     const R = 6371; // รัศมีโลกเฉลี่ย (km)
     const dLat = this.deg2rad(p2.latitude - p1.latitude);
     const dLon = this.deg2rad(p2.longitude - p1.longitude);
@@ -65,11 +79,13 @@ export class VrpOptimizerService {
         Math.sin(dLon / 2) *
         Math.sin(dLon / 2);
 
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const clampedA = Math.min(1, Math.max(0, a));
+    const c = 2 * Math.atan2(Math.sqrt(clampedA), Math.sqrt(1 - clampedA));
     const distanceKm = R * c;
 
     // เผื่อระยะทางเลี้ยวตามถนนในเมือง (City winding factor 1.25)
-    return Math.round(distanceKm * 1.25 * 100) / 100;
+    // Keep full precision internally; round only values exposed to clients.
+    return distanceKm * 1.25;
   }
 
   private static deg2rad(deg: number): number {
@@ -87,6 +103,65 @@ export class VrpOptimizerService {
     let angle = Math.atan2(dy, dx); // เรเดียน (-PI ถึง PI)
     if (angle < 0) angle += 2 * Math.PI;
     return angle;
+  }
+
+  /** Start the circular sweep immediately after its largest angular gap. */
+  private static sortOrdersForCircularSweep(
+    orders: readonly PendingOrder[]
+  ): PendingOrder[] {
+    const sorted = [...orders].sort((a, b) => {
+      const angleDiff =
+        this.calculateAngleFromHub(a.customer) -
+        this.calculateAngleFromHub(b.customer);
+      return angleDiff !== 0 ? angleDiff : a.id - b.id;
+    });
+
+    if (sorted.length <= 1) return sorted;
+
+    let largestGap = -1;
+    let startIndex = 0;
+    for (let index = 0; index < sorted.length; index += 1) {
+      const nextIndex = (index + 1) % sorted.length;
+      const currentAngle = this.calculateAngleFromHub(sorted[index].customer);
+      const nextAngle = this.calculateAngleFromHub(sorted[nextIndex].customer);
+      const gap =
+        nextIndex === 0
+          ? nextAngle + 2 * Math.PI - currentAngle
+          : nextAngle - currentAngle;
+
+      if (gap > largestGap) {
+        largestGap = gap;
+        startIndex = nextIndex;
+      }
+    }
+
+    return [...sorted.slice(startIndex), ...sorted.slice(0, startIndex)];
+  }
+
+  private static assertValidOrders(orders: readonly PendingOrder[]): void {
+    const seenIds = new Set<number>();
+    for (const order of orders) {
+      const valid =
+        Number.isSafeInteger(order.id) &&
+        order.id > 0 &&
+        !seenIds.has(order.id) &&
+        Number.isInteger(order.boxAmount) &&
+        order.boxAmount > 0 &&
+        Number.isFinite(order.totalPrice) &&
+        Number.isFinite(order.customer.latitude) &&
+        order.customer.latitude >= -90 &&
+        order.customer.latitude <= 90 &&
+        Number.isFinite(order.customer.longitude) &&
+        order.customer.longitude >= -180 &&
+        order.customer.longitude <= 180;
+
+      if (!valid) {
+        throw new TypeError(
+          `Invalid pending order data for order ID ${String(order.id)}`
+        );
+      }
+      seenIds.add(order.id);
+    }
   }
 
   /**
@@ -111,20 +186,21 @@ export class VrpOptimizerService {
    * Main Algorithm: Vehicle Routing Problem (VRP) & TSP 2-Opt
    */
   public static optimizeRoutes(
-    orders: PendingOrder[],
-    startSequence: number = 1
+    orders: readonly PendingOrder[],
+    startSequence = 1,
+    optimizationDate: Date = new Date()
   ): ProposedTask[] {
-    if (!orders || orders.length === 0) return [];
+    if (orders.length === 0) return [];
+    if (!Number.isSafeInteger(startSequence) || startSequence < 1) {
+      throw new RangeError("startSequence must be a positive integer");
+    }
+    this.assertValidOrders(orders);
 
     const hub = BUSINESS_RULES.HUB;
 
     // 1. เรียงลำดับออเดอร์ด้วย Sweep Algorithm (ตามมุม Polar Angle จาก Hub)
     // เพื่อให้ออเดอร์ที่อยู่ในโซน/ทิศทางเดียวกันถูกจัดกลุ่มเข้าด้วยกัน ป้องกันการวิ่งข้ามเมืองตัดกัน
-    const sortedOrders = [...orders].sort((a, b) => {
-      const angleA = this.calculateAngleFromHub(a.customer);
-      const angleB = this.calculateAngleFromHub(b.customer);
-      return angleA - angleB;
-    });
+    const sortedOrders = this.sortOrdersForCircularSweep(orders);
 
     // 2. แบ่งกลุ่ม Cluster โดยไรเดอร์ 1 คน รับไม่เกิน 3 ออเดอร์
     const maxOrdersPerRider = BUSINESS_RULES.MAX_ORDERS_PER_RIDER;
@@ -134,7 +210,7 @@ export class VrpOptimizerService {
     }
 
     const proposedTasks: ProposedTask[] = [];
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const dateStr = formatBangkokDateKey(optimizationDate);
 
     // 3. ปรับลำดับการส่งในแต่ละ Cluster ด้วย Exhaustive Permutation / 2-Opt (TSP)
     clusters.forEach((cluster, index) => {
@@ -153,6 +229,7 @@ export class VrpOptimizerService {
       };
       let totalDistance = 0;
       let elapsedMinutes = 0;
+      let finalArrivalMinutes = 0;
       let totalBoxes = 0;
 
       const stops: OptimizedStop[] = [];
@@ -165,13 +242,15 @@ export class VrpOptimizerService {
           latitude: order.customer.latitude,
           longitude: order.customer.longitude,
         };
-        const legDistance = this.calculateHaversineDistance(currentPoint, dest);
-        totalDistance += legDistance;
+        const rawLegDistance = this.calculateRoadDistanceKm(currentPoint, dest);
+        const legDistance = Math.round(rawLegDistance * 100) / 100;
+        totalDistance += rawLegDistance;
 
         // เวลาเดินทาง = (ระยะทาง / 30 กม./ชม.) * 60 นาที
         const travelMinutes =
-          (legDistance / BUSINESS_RULES.AVERAGE_SPEED_KMH) * 60;
+          (rawLegDistance / BUSINESS_RULES.AVERAGE_SPEED_KMH) * 60;
         elapsedMinutes += travelMinutes;
+        finalArrivalMinutes = elapsedMinutes;
 
         const estArrival = this.formatTime(
           BUSINESS_RULES.DEPARTURE_TIME,
@@ -202,7 +281,8 @@ export class VrpOptimizerService {
       });
 
       totalDistance = Math.round(totalDistance * 100) / 100;
-      const roundedMinutes = Math.round(elapsedMinutes);
+      // Never understate a route duration in the UI.
+      const roundedMinutes = Math.ceil(elapsedMinutes);
 
       // สูตรค่าจ้างไรเดอร์: 15 + (2 x ระยะทาง x จำนวนกล่อง)
       const deliveryFee =
@@ -220,7 +300,10 @@ export class VrpOptimizerService {
         100;
 
       // ตรวจสอบเงื่อนไขว่าส่งทันเวลา 12:30 น. (ภายใน 60 นาที) หรือไม่
-      const isLate = roundedMinutes > BUSINESS_RULES.MAX_ALLOWED_MINUTES;
+      // SLA means arrival at the final customer. The final hand-off service
+      // time is not travel lateness, and raw minutes must not be rounded down.
+      const isLate =
+        finalArrivalMinutes > BUSINESS_RULES.MAX_ALLOWED_MINUTES;
 
       proposedTasks.push({
         taskNumber,
@@ -246,19 +329,19 @@ export class VrpOptimizerService {
    */
   private static findBestTspSequence(
     start: GeoPoint,
-    orders: PendingOrder[]
+    orders: readonly PendingOrder[]
   ): PendingOrder[] {
-    if (orders.length <= 1) return orders;
+    if (orders.length <= 1) return [...orders];
 
     const permutations = this.getPermutations(orders);
-    let bestSeq = orders;
+    let bestSeq = [...orders];
     let minDistance = Infinity;
 
     for (const seq of permutations) {
       let d = 0;
       let curr = start;
       for (const order of seq) {
-        d += this.calculateHaversineDistance(curr, order.customer);
+        d += this.calculateRoadDistanceKm(curr, order.customer);
         curr = order.customer;
       }
 
@@ -271,8 +354,8 @@ export class VrpOptimizerService {
     return bestSeq;
   }
 
-  private static getPermutations<T>(arr: T[]): T[][] {
-    if (arr.length <= 1) return [arr];
+  private static getPermutations<T>(arr: readonly T[]): T[][] {
+    if (arr.length <= 1) return [[...arr]];
     const result: T[][] = [];
     for (let i = 0; i < arr.length; i++) {
       const current = arr[i];
