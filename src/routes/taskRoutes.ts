@@ -4,6 +4,20 @@ import { QrService } from "../services/qrService";
 
 const router = Router();
 
+function normalizePhone(value: unknown): string {
+  return String(value ?? "").replace(/\D/g, "");
+}
+
+async function findRiderByPhone(phone: string) {
+  const normalizedPhone = normalizePhone(phone);
+  if (normalizedPhone.length < 9 || normalizedPhone.length > 15) return null;
+
+  const riders = await prisma.rider.findMany({
+    select: { id: true, name: true, phone: true, vehiclePlate: true, status: true },
+  });
+  return riders.find((rider) => normalizePhone(rider.phone) === normalizedPhone) ?? null;
+}
+
 // 1. ดึงรายการ Tasks ทั้งหมด
 router.get("/", async (req: Request, res: Response) => {
   try {
@@ -24,6 +38,51 @@ router.get("/", async (req: Request, res: Response) => {
     res.json(tasks);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// งานทั้งหมดของไรเดอร์ตามเบอร์โทร ต้องประกาศก่อน /:taskNumber
+router.get("/rider/:phone", async (req: Request, res: Response) => {
+  try {
+    const rider = await findRiderByPhone(String(req.params.phone));
+    if (!rider) {
+      return res.json({ rider: null, tasks: [] });
+    }
+
+    const tasks = await prisma.deliveryTask.findMany({
+      where: { riderId: rider.id },
+      include: {
+        items: {
+          select: { deliveryStatus: true },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return res.json({
+      rider,
+      tasks: tasks.map((task) => {
+        const deliveredStops = task.items.filter(
+          (item) => item.deliveryStatus === "DELIVERED"
+        ).length;
+        return {
+          id: task.id,
+          taskNumber: task.taskNumber,
+          date: task.date,
+          status: task.status,
+          totalBoxes: task.totalBoxes,
+          totalDistance: task.totalDistance,
+          deliveryFee: task.deliveryFee,
+          totalStops: task.items.length,
+          deliveredStops,
+          remainingStops: task.items.length - deliveredStops,
+        };
+      }),
+    });
+  } catch (error: unknown) {
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
   }
 });
 
@@ -65,6 +124,12 @@ router.get("/:taskNumber", async (req: Request, res: Response) => {
       routeColor: task.routeColor,
       rider: task.rider,
       totalStopsCount: task.items.length,
+      deliveredStopsCount: task.items.filter(
+        (item) => item.deliveryStatus === "DELIVERED"
+      ).length,
+      remainingStopsCount: task.items.filter(
+        (item) => item.deliveryStatus !== "DELIVERED"
+      ).length,
       stops: hasRider
         ? task.items.map((item) => ({
             itemId: item.id,
@@ -133,15 +198,13 @@ router.post("/:taskNumber/checkin", async (req: Request, res: Response) => {
     }
 
     // ค้นหาหรือสร้างไรเดอร์
-    let rider = await prisma.rider.findFirst({
-      where: { phone: riderPhone },
-    });
+    let rider = await findRiderByPhone(String(riderPhone));
 
     if (!rider) {
       rider = await prisma.rider.create({
         data: {
           name: riderName,
-          phone: riderPhone,
+          phone: normalizePhone(riderPhone),
           vehiclePlate: vehiclePlate || "มอเตอร์ไซค์",
           status: "ON_DUTY",
         },
@@ -158,6 +221,8 @@ router.post("/:taskNumber/checkin", async (req: Request, res: Response) => {
     if (activeTask) {
       return res.status(409).json({
         error: `ไรเดอร์มีใบงาน ${activeTask.taskNumber} ที่ยังส่งไม่เสร็จ`,
+        code: "ACTIVE_TASK_EXISTS",
+        activeTaskNumber: activeTask.taskNumber,
       });
     }
 
@@ -172,6 +237,10 @@ router.post("/:taskNumber/checkin", async (req: Request, res: Response) => {
     if (claimedTask.count !== 1) {
       return res.status(409).json({ error: "ใบงานนี้มีไรเดอร์รับไปแล้ว" });
     }
+    await prisma.rider.update({
+      where: { id: rider.id },
+      data: { status: "ON_DUTY" },
+    });
     const updatedTask = await prisma.deliveryTask.findUnique({
       where: { taskNumber },
       include: { rider: true },
@@ -215,40 +284,64 @@ router.patch(
         return res.status(400).json({ error: "กรุณาลงชื่อรับใบงานก่อน จึงจะสามารถยืนยันส่งมอบได้" });
       }
 
-      const item = await prisma.taskItem.update({
-        where: { id: numItemId },
-        data: {
-          deliveryStatus: "DELIVERED",
-          actualArrival: new Date(),
-        },
-        include: { task: true },
-      });
-
-      // อัปเดตสถานะออเดอร์
-      await prisma.order.update({
-        where: { id: item.orderId },
-        data: { status: "DELIVERED" },
-      });
-
-      // ตรวจสอบว่าส่งครบทุกจุดใน Task นี้แล้วหรือยัง
-      const remainingStops = await prisma.taskItem.count({
+      const nextPendingItem = await prisma.taskItem.findFirst({
         where: {
-          taskId: item.taskId,
+          taskId: existingItem.taskId,
           deliveryStatus: "PENDING",
         },
+        orderBy: { stopSequence: "asc" },
       });
-
-      if (remainingStops === 0) {
-        await prisma.deliveryTask.update({
-          where: { id: item.taskId },
-          data: { status: "DELIVERED" },
+      if (!nextPendingItem) {
+        return res.status(409).json({ error: "ใบงานนี้จัดส่งครบแล้ว" });
+      }
+      if (nextPendingItem.id !== numItemId) {
+        return res.status(409).json({
+          error: `กรุณาส่งจุดที่ ${nextPendingItem.stopSequence} ให้เสร็จก่อน`,
+          code: "OUT_OF_SEQUENCE",
+          nextStopSequence: nextPendingItem.stopSequence,
         });
       }
 
+      const result = await prisma.$transaction(async (tx) => {
+        const updated = await tx.taskItem.updateMany({
+          where: { id: numItemId, deliveryStatus: "PENDING" },
+          data: { deliveryStatus: "DELIVERED", actualArrival: new Date() },
+        });
+        if (updated.count !== 1) {
+          throw new Error("จุดส่งนี้ถูกอัปเดตไปแล้ว กรุณาโหลดข้อมูลใหม่");
+        }
+
+        await tx.order.update({
+          where: { id: existingItem.orderId },
+          data: { status: "DELIVERED" },
+        });
+
+        const remainingStops = await tx.taskItem.count({
+          where: {
+            taskId: existingItem.taskId,
+            deliveryStatus: "PENDING",
+          },
+        });
+        if (remainingStops === 0) {
+          await tx.deliveryTask.update({
+            where: { id: existingItem.taskId },
+            data: { status: "DELIVERED" },
+          });
+          await tx.rider.update({
+            where: { id: existingItem.task.riderId! },
+            data: { status: "AVAILABLE" },
+          });
+        }
+
+        return { remainingStops };
+      });
+
       res.json({
-        message: `จุดส่งที่ ${item.stopSequence} จัดส่งสำเร็จเรียบร้อย`,
-        item,
-        isTaskCompleted: remainingStops === 0,
+        message: `จุดส่งที่ ${existingItem.stopSequence} จัดส่งสำเร็จเรียบร้อย`,
+        itemId: existingItem.id,
+        stopSequence: existingItem.stopSequence,
+        remainingStops: result.remainingStops,
+        isTaskCompleted: result.remainingStops === 0,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -269,7 +362,8 @@ router.patch("/:taskNumber/status", async (req: Request, res: Response) => {
 
     const allowedTransitions: Record<string, readonly string[]> = {
       CONFIRMED: ["CANCELLED"],
-      IN_PROGRESS: ["DELIVERED", "CANCELLED"],
+      // DELIVERED ถูกกำหนดจาก endpoint ส่งสำเร็จเมื่อครบทุกจุดเท่านั้น
+      IN_PROGRESS: ["CANCELLED"],
       DELIVERED: [],
       CANCELLED: [],
     };
