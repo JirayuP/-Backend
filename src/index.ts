@@ -39,4 +39,17 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Smart Lunch Delivery Backend Server running on port ${PORT}`);
   console.log(`📍 Endpoint: http://0.0.0.0:${PORT}/api/health`);
   console.log(`=======================================================`);
+
+  // Asynchronously sync schema if DATABASE_URL is available without crashing the server
+  if (process.env.DATABASE_URL) {
+    import("child_process").then(({ exec }) => {
+      exec("npx prisma db push --skip-generate", (err) => {
+        if (err) {
+          console.warn("⚠️ [DB] Prisma sync notice:", err.message);
+        } else {
+          console.log("✅ [DB] Database schema synchronized successfully.");
+        }
+      });
+    });
+  }
 });
