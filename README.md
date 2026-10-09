@@ -1,85 +1,85 @@
-# 🚀 Smart Lunch Delivery - Backend API
-
-ระบบ Backend RESTful API พัฒนาด้วย Node.js, Express, TypeScript และ Prisma ORM สำหรับระบบจัดเส้นทางและแบ่งงานไรเดอร์อัจฉริยะ (พร้อมไฟล์คอนฟิกสำหรับ Railway และ Docker)
+# 🍱 Smart Lunch Delivery - Backend API
+> **Route Optimization & Rider Task Allocation System**  
+> ระบบ RESTful Web API สำหรับคำนวณเส้นทางและแบ่งงานไรเดอร์ส่งอาหารมื้อเที่ยง เชื่อมต่อกับฐานข้อมูล **MySQL** ด้วย **Prisma ORM**
 
 ---
 
-## 🛠️ Tech Stack
+## 🛠️ โครงสร้างเทคโนโลยี (Tech Stack)
 - **Runtime:** Node.js (v18+)
 - **Framework:** Express.js (TypeScript)
+- **Build Tool:** esbuild (Bundle รวดเร็วสำหรับ Production)
 - **Database ORM:** Prisma ORM (MySQL / MariaDB)
-- **Platform Support:** Railway.app, Docker, Docker Compose, Linux VPS
 
 ---
 
-## 🚂 วิธี Deploy บน Railway (railway.app) แบบ Step-by-Step
+## 🚀 วิธีการติดตั้งและรันระบบ (Local Development)
 
-โปรเจกต์นี้มีไฟล์ `railway.json`, `Dockerfile` และสคริปต์ Sync Database อัตโนมัติ (`scripts/start.js`) รองรับ Railway แบบ Zero-Config:
+### 1. ติดตั้ง Dependencies
+```bash
+npm install
+```
 
-### ขั้นตอนที่ 1: สร้าง Project & เพิ่ม MySQL บน Railway
-1. เข้าเว็บ [Railway.app](https://railway.app/) และล็อกอิน
-2. กด **"+ New Project"**
-3. เลือก **"Provision MySQL"** (Railway จะสร้างฐานข้อมูล MySQL ให้ทันที)
+### 2. สร้าง Prisma Client (เชื่อมต่อ MySQL)
+```bash
+npx prisma generate
+```
 
-### ขั้นตอนที่ 2: เพิ่ม Backend Service จาก GitHub
-1. ในโปรเจกต์เดิม กดปุ่ม **"+ Create"** หรือ **"+ New"**
-2. เลือก **"GitHub Repo"** แล้วเลือก **`JirayuP/-Backend`**
+### 3. รันระบบสำหรับ Development (Hot-reload)
+```bash
+npm run dev
+```
+เซิร์ฟเวอร์จะเปิดทำงานที่: **http://localhost:3000**
 
-### ขั้นตอนที่ 3: ตั้งค่า Environment Variables (เชื่อม Database)
-1. คลิกที่กล่องบริการ Backend ที่เพิ่งเพิ่ม
-2. ไปที่แท็บ **"Variables"**
-3. กด **"Add Reference"** หรือสร้างตัวแปร:
+### 4. Build และรันในโหมด Production
+```bash
+npm run build
+npm start
+```
+
+---
+
+## 🚂 วิธี Deploy บน Railway (ไม่ใช้ Docker / ใช้ Native Node.js)
+
+Railway จะตรวจจับโปรเจกต์เป็น Node.js อัตโนมัติ (ผ่าน Nixpacks) เหมือนกับ `customer-order-api`:
+
+### 1. สร้าง MySQL บน Railway
+1. ไปที่โปรเจกต์บน [Railway.app](https://railway.app/)
+2. กด **"+ Create"** -> **"Database"** -> **"Add MySQL"**
+
+### 2. เชื่อมต่อ GitHub Repository
+1. กด **"+ Create"** -> **"GitHub Repo"**
+2. เลือก Repository: **`JirayuP/-Backend`**
+
+### 3. ตั้งค่าตัวแปรสภาพแวดล้อม (Variables)
+1. เข้าไปที่ Service Backend ของคุณ
+2. ไปที่แท็บ **Variables**
+3. เพิ่มตัวแปร:
    ```text
    DATABASE_URL = ${{MySQL.MYSQL_URL}}
    ```
-   *(หรือถ้าใช้ชื่อ `DATABASE_URL` จาก MySQL plugin ก็เลือกใส่ค่านั้นได้เลย)*
-4. Railway จะตั้งค่า `$PORT` ให้โดยอัตโนมัติ
+   *(หรือใส่ MySQL Connection String จาก Database)*
 
-### ขั้นตอนที่ 4: สร้าง Public Domain เพื่อใช้งาน
-1. ไปที่แท็บ **"Settings"** ของบริการ Backend
-2. เลื่อนลงมาที่หัวข้อ **"Networking"** -> กดปุ่ม **"Generate Domain"**
-3. จะได้ URL เช่น: `https://backend-production-xxxx.up.railway.app`
-4. ตรวจสอบสถานะ Server ได้ที่: `https://<your-railway-url>/api/health`
+### 4. ตรวจสอบการ Build & Start
+Railway จะตรวจจับและรันคำสั่งจาก `package.json` ให้อัตโนมัติ:
+- **Build Command:** `npm run build` (รัน `prisma generate` และ bundle ด้วย `esbuild`)
+- **Start Command:** `npm start` (รัน `node dist/index.js`)
 
-> **Note:** เมื่อ Deploy บน Railway สคริปต์ `scripts/start.js` จะรันคำสั่ง `npx prisma db push` เพื่อสร้างตารางฐานข้อมูลใน MySQL ให้โดยอัตโนมัติทันที!
-
----
-
-## ⚙️ การตั้งค่า Environment Variables ในเครื่อง (`.env`)
-คัดลอกไฟล์ `.env.example` เป็น `.env`:
-```bash
-PORT=3000
-DATABASE_URL="mysql://root:password@localhost:3306/lunch_delivery"
-```
+### 5. สร้าง Public Domain (Networking)
+1. ไปที่แท็บ **Settings** -> หัวข้อ **Networking**
+2. กด **Generate Domain** จะได้ URL ใช้งาน เช่น `https://xxxx.up.railway.app`
+3. ทดสอบเรียกดูสถานะที่: `https://xxxx.up.railway.app/api/health`
 
 ---
 
-## 🐳 วิธีการ Deploy ทางเลือกอื่นๆ
+## 📋 API Endpoints สรุป
 
-### วิธีที่ 1: Deploy ด้วย Docker Compose (บน VPS)
-```bash
-docker compose up -d --build
-```
-
-### วิธีที่ 2: รันด้วย PM2 บน Linux Server
-```bash
-npm install
-npm run build
-npx prisma db push
-pm2 start dist/index.js --name "lunch-backend"
-```
-
----
-
-## 📡 Health Check API
-```http
-GET /api/health
-```
-Response:
-```json
-{
-  "status": "ok",
-  "service": "Smart Lunch Delivery Route Optimization API",
-  "time": "2026-10-09T..."
-}
-```
+| Method | Endpoint | รายละเอียด |
+|---|---|---|
+| **GET** | `/api/health` | ตรวจสอบสถานะการทำงานของเซิร์ฟเวอร์ |
+| **GET** | `/api/customers` | จัดการข้อมูลลูกค้าและพิกัดจัดส่ง |
+| **GET** | `/api/orders` | ดูรายการสั่งซื้อทั้งหมด |
+| **POST** | `/api/orders/seed` | จำลองข้อมูลคำสั่งซื้ออัตโนมัติ |
+| **POST** | `/api/routes/optimize` | คำนวณจับกลุ่มและจัดลำดับเส้นทางไรเดอร์ (VRP + 2-Opt) |
+| **POST** | `/api/routes/confirm` | ยืนยันปล่อยงานและสร้าง Delivery Task ให้ไรเดอร์ |
+| **GET** | `/api/tasks/:taskCode` | ดูรายละเอียดใบงานไรเดอร์และ QR Code |
+| **PATCH**| `/api/tasks/:taskCode/status` | อัปเดตสถานะการจัดส่งของไรเดอร์ |
