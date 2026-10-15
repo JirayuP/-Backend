@@ -25,6 +25,7 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/routes", routeRoutes);
 app.use("/api/tasks", taskRoutes);
 
+// แสดงสถานะพื้นฐานและตำแหน่ง Health Check ของ Backend
 app.get("/", (req: Request, res: Response) => {
   res.json({
     service: "Smart Lunch Delivery Backend Server",
@@ -33,6 +34,7 @@ app.get("/", (req: Request, res: Response) => {
   });
 });
 
+// ตรวจสอบว่า Backend เชื่อมต่อฐานข้อมูลได้หรือไม่
 app.get("/api/health", async (_req: Request, res: Response) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -52,6 +54,7 @@ app.get("/api/health", async (_req: Request, res: Response) => {
   }
 });
 
+// เปิดเซิร์ฟเวอร์ให้รับคำขอตามพอร์ตที่กำหนด
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`=======================================================`);
   console.log(`🚀 Smart Lunch Delivery Backend Server running on port ${PORT}`);

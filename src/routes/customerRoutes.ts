@@ -5,6 +5,7 @@ import { calculateStraightDistanceKm } from "../utils/geo";
 
 const router = Router();
 
+// ตรวจสอบว่าพิกัดลูกค้าอยู่ในพื้นที่ให้บริการ
 function validateServiceCoordinates(latitude: number, longitude: number): string | null {
   if (
     !Number.isFinite(latitude) ||
@@ -30,6 +31,7 @@ function validateServiceCoordinates(latitude: number, longitude: number): string
 // 1. ค้นหาลูกค้าในระยะทางที่กำหนด (เช่น 1 กิโลเมตร)
 // GET /api/customers/nearby?lat=16.246825&lng=103.252072&radius=1
 // ========================================================
+// ค้นหาลูกค้าที่อยู่ใกล้พิกัดและรัศมีที่กำหนด
 router.get("/nearby", async (req: Request, res: Response) => {
   try {
     const hub = BUSINESS_RULES.HUB;
@@ -77,6 +79,7 @@ router.get("/nearby", async (req: Request, res: Response) => {
 // 2. ค้นหาลูกค้าจากส่วนหนึ่งของชื่อ หรือนามสกุล
 // GET /api/customers/search?name=พลอย
 // ========================================================
+// ค้นหาลูกค้าจากชื่อหรือเบอร์โทรศัพท์
 router.get("/search", async (req: Request, res: Response) => {
   try {
     const query = String(req.query.name || req.query.q || "").trim();
@@ -112,6 +115,7 @@ router.get("/search", async (req: Request, res: Response) => {
 // 3. แสดงข้อมูลลูกค้าทุกคน (พร้อมรองรับ ?search=...)
 // GET /api/customers
 // ========================================================
+// ดึงรายชื่อลูกค้าทั้งหมดพร้อมรองรับคำค้น
 router.get("/", async (req: Request, res: Response) => {
   try {
     const search = req.query.search || req.query.name;
@@ -147,6 +151,7 @@ router.get("/", async (req: Request, res: Response) => {
 // 4. ดูข้อมูลลูกค้ารายคนตาม ID
 // GET /api/customers/:id
 // ========================================================
+// ดึงรายละเอียดลูกค้าตามรหัส
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
@@ -173,6 +178,7 @@ router.get("/:id", async (req: Request, res: Response) => {
 // 5. เพิ่มลูกค้าใหม่
 // POST /api/customers
 // ========================================================
+// ตรวจสอบและสร้างข้อมูลลูกค้าใหม่
 router.post("/", async (req: Request, res: Response) => {
   try {
     const { name, phone, addressDetail, latitude, longitude } = req.body;
@@ -212,6 +218,7 @@ router.post("/", async (req: Request, res: Response) => {
 // 6. แก้ไขข้อมูลลูกค้า
 // PUT / PATCH /api/customers/:id
 // ========================================================
+// ตรวจสอบและแก้ไขข้อมูลลูกค้าตามรหัส
 const updateCustomerHandler = async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
@@ -261,6 +268,7 @@ router.patch("/:id", updateCustomerHandler);
 // 7. ลบลูกค้า
 // DELETE /api/customers/:id
 // ========================================================
+// ลบลูกค้าที่ไม่มีออเดอร์ผูกอยู่
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);

@@ -4,10 +4,12 @@ import { QrService } from "../services/qrService";
 
 const router = Router();
 
+// ปรับรูปแบบเบอร์โทรศัพท์ให้เหลือเฉพาะตัวเลข
 function normalizePhone(value: unknown): string {
   return String(value ?? "").replace(/\D/g, "");
 }
 
+// ค้นหาข้อมูลไรเดอร์จากเบอร์โทรศัพท์
 async function findRiderByPhone(phone: string) {
   const normalizedPhone = normalizePhone(phone);
   if (normalizedPhone.length < 9 || normalizedPhone.length > 15) return null;

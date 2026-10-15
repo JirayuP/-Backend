@@ -9,6 +9,7 @@ const router = Router();
 // 1. แสดงรายการสั่งซื้อทั้งหมดในระยะทางที่กำหนด (เช่น 2 กิโลเมตร จากพิกัดที่กำหนด)
 // GET /api/orders/nearby?lat=16.246825&lng=103.252072&radius=2
 // ========================================================
+// ค้นหาออเดอร์ที่อยู่ใกล้พิกัดและรัศมีที่กำหนด
 router.get("/nearby", async (req: Request, res: Response) => {
   try {
     const hub = BUSINESS_RULES.HUB;
@@ -61,6 +62,7 @@ router.get("/nearby", async (req: Request, res: Response) => {
 // 2. ดึงรายการออเดอร์ทั้งหมด พร้อมข้อมูลลูกค้า
 // GET /api/orders
 // ========================================================
+// ดึงรายการออเดอร์ทั้งหมด
 router.get("/", async (req: Request, res: Response) => {
   try {
     const status = req.query.status ? String(req.query.status).trim() : undefined;
@@ -88,6 +90,7 @@ router.get("/", async (req: Request, res: Response) => {
 // 3. ดูรายละเอียดออเดอร์ราย ID
 // GET /api/orders/:id
 // ========================================================
+// ดึงรายละเอียดออเดอร์ตามรหัส
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
@@ -115,6 +118,7 @@ router.get("/:id", async (req: Request, res: Response) => {
 // 4. เพิ่มรายการสั่งซื้อใหม่
 // POST /api/orders
 // ========================================================
+// ตรวจสอบและสร้างออเดอร์ใหม่
 router.post("/", async (req: Request, res: Response) => {
   try {
     const { customerId, boxAmount } = req.body;
@@ -163,6 +167,7 @@ router.post("/", async (req: Request, res: Response) => {
 // 5. แก้ไขจำนวนกล่องในออเดอร์ (คำนวณราคารวมใหม่อัตโนมัติ)
 // PATCH / PUT /api/orders/:id
 // ========================================================
+// แก้ไขจำนวนกล่องหรือสถานะของออเดอร์
 const updateOrderHandler = async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
@@ -227,6 +232,7 @@ router.put("/:id", updateOrderHandler);
 // 6. ลบออเดอร์รายรายการ
 // DELETE /api/orders/:id
 // ========================================================
+// ลบออเดอร์ที่ยังอยู่ในสถานะรอดำเนินการ
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
@@ -255,6 +261,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
 // 7. ล้าง(ลบทั้งหมด) รายการสั่งซื้อและใบงานทั้งหมด
 // DELETE /api/orders
 // ========================================================
+// ล้างออเดอร์และข้อมูลใบงานทั้งหมด
 router.delete("/", async (req: Request, res: Response) => {
   try {
     const deletedItems = await prisma.taskItem.deleteMany();
@@ -278,6 +285,7 @@ router.delete("/", async (req: Request, res: Response) => {
 // 8. จำลองรายการสั่งซื้อ 20-30 รายการ พร้อมข้อมูลลูกค้าครบถ้วน
 // POST /api/orders/seed?count=25
 // ========================================================
+// สร้างลูกค้าและออเดอร์จำลองสำหรับทดสอบระบบ
 router.post("/seed", async (req: Request, res: Response) => {
   try {
     // ล้างข้อมูลออเดอร์และใบงานเก่า

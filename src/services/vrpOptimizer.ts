@@ -66,10 +66,12 @@ interface PartitionCandidate {
   maxEstimatedMinutes: number;
 }
 
+// ปัดค่าตัวเลขเป็นทศนิยมสองตำแหน่ง
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+// แปลงวันที่เป็นรหัส YYYYMMDD ตามเวลาไทย
 export function formatBangkokDateKey(date: Date = new Date()): string {
   const bangkokDate = new Date(date.getTime() + BANGKOK_UTC_OFFSET_MS);
   const year = bangkokDate.getUTCFullYear();
@@ -79,6 +81,7 @@ export function formatBangkokDateKey(date: Date = new Date()): string {
 }
 
 export class VrpOptimizerService {
+  // คำนวณระยะทางเส้นตรงระหว่างสองพิกัด
   public static calculateStraightDistanceKm(
     p1: GeoPoint,
     p2: GeoPoint
@@ -86,6 +89,7 @@ export class VrpOptimizerService {
     return roundMoney(this.calculateGreatCircleDistanceKm(p1, p2));
   }
 
+  // คำนวณระยะทางถนนโดยประมาณระหว่างสองพิกัด
   public static calculateHaversineDistance(
     p1: GeoPoint,
     p2: GeoPoint
@@ -93,6 +97,7 @@ export class VrpOptimizerService {
     return roundMoney(this.calculateRoadDistanceKm(p1, p2));
   }
 
+  // คำนวณระยะทางบนผิวโลกด้วยสูตรวงกลมใหญ่
   private static calculateGreatCircleDistanceKm(
     p1: GeoPoint,
     p2: GeoPoint
@@ -110,6 +115,7 @@ export class VrpOptimizerService {
     return EARTH_RADIUS_KM * centralAngle;
   }
 
+  // ปรับระยะทางเส้นตรงให้เป็นระยะทางถนนโดยประมาณ
   private static calculateRoadDistanceKm(
     p1: GeoPoint,
     p2: GeoPoint
@@ -119,10 +125,12 @@ export class VrpOptimizerService {
     );
   }
 
+  // แปลงหน่วยองศาเป็นเรเดียน
   private static deg2rad(degrees: number): number {
     return degrees * (Math.PI / 180);
   }
 
+  // คำนวณมุมของจุดส่งเทียบกับศูนย์กลาง
   private static calculateAngleFromHub(point: GeoPoint): number {
     const hub = BUSINESS_RULES.HUB;
     const angle = Math.atan2(
@@ -132,6 +140,7 @@ export class VrpOptimizerService {
     return angle < 0 ? angle + 2 * Math.PI : angle;
   }
 
+  // เรียงออเดอร์ตามมุมรอบศูนย์กลางเพื่อจัดกลุ่มเส้นทาง
   private static sortOrdersForCircularSweep(
     orders: readonly PendingOrder[]
   ): PendingOrder[] {
@@ -168,6 +177,7 @@ export class VrpOptimizerService {
     return [...sorted.slice(startIndex), ...sorted.slice(0, startIndex)];
   }
 
+  // ตรวจสอบความถูกต้องและขอบเขตบริการของออเดอร์
   private static assertValidOrders(
     orders: readonly PendingOrder[]
   ): void {
@@ -207,6 +217,7 @@ export class VrpOptimizerService {
     }
   }
 
+  // เพิ่มนาทีและจัดรูปแบบเวลาเป็น HH:mm
   private static formatTime(
     baseTime: string,
     addMinutes: number
@@ -220,6 +231,7 @@ export class VrpOptimizerService {
     ).padStart(2, "0")}`;
   }
 
+  // สร้างลิงก์นำทาง Google Maps ไปยังจุดส่ง
   private static createNavigationUrl(
     latitude: number,
     longitude: number
@@ -228,6 +240,7 @@ export class VrpOptimizerService {
     return `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
   }
 
+  // จัดกลุ่มและคำนวณเส้นทางจัดส่งตามกลยุทธ์ที่เลือก
   public static optimizeRoutes(
     orders: readonly PendingOrder[],
     startSequence = 1,
@@ -257,6 +270,7 @@ export class VrpOptimizerService {
     );
   }
 
+  // แบ่งออเดอร์เป็นกลุ่มงานตามกลยุทธ์
   private static partitionOrders(
     orders: readonly PendingOrder[],
     strategy: RouteStrategy,
@@ -286,6 +300,7 @@ export class VrpOptimizerService {
     return this.findLowestCostPartition(orders, optimizationDate);
   }
 
+  // ค้นหาการแบ่งกลุ่มที่มีต้นทุนรวมต่ำที่สุด
   private static findLowestCostPartition(
     orders: readonly PendingOrder[],
     optimizationDate: Date
@@ -345,6 +360,7 @@ export class VrpOptimizerService {
     return best[0]?.clusters ?? [];
   }
 
+  // เปรียบเทียบต้นทุนของแผนการแบ่งกลุ่มสองแบบ
   private static compareCostCandidates(
     left: PartitionCandidate,
     right: PartitionCandidate
@@ -358,6 +374,7 @@ export class VrpOptimizerService {
     );
   }
 
+  // สร้างรายละเอียดใบงานจากกลุ่มออเดอร์
   private static buildTask(
     cluster: readonly PendingOrder[],
     sequenceNumber: number,
@@ -458,6 +475,7 @@ export class VrpOptimizerService {
     };
   }
 
+  // ค้นหาลำดับจุดส่งที่มีระยะทางสั้นที่สุด
   private static findBestTspSequence(
     start: GeoPoint,
     orders: readonly PendingOrder[]
@@ -486,6 +504,7 @@ export class VrpOptimizerService {
     return bestSequence;
   }
 
+  // สร้างลำดับความเป็นไปได้ทั้งหมดของรายการ
   private static getPermutations<T>(
     items: readonly T[]
   ): T[][] {

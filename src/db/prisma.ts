@@ -24,6 +24,7 @@ const basePrisma = new PrismaClient(
 export const prisma = basePrisma.$extends({
   query: {
     $allModels: {
+      // เรียกคำสั่งฐานข้อมูลซ้ำหนึ่งครั้งเมื่อการเชื่อมต่อถูกตัด
       async $allOperations({ operation, model, args, query }) {
         try {
           return await query(args);

@@ -58,10 +58,12 @@ class RequestError extends Error {
   }
 }
 
+// แปลงข้อผิดพลาดให้เป็นข้อความที่อ่านได้
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
 }
 
+// หาช่วงเวลาเริ่มและสิ้นสุดของวันตามเวลาไทย
 function getBangkokDayWindow(date: Date): { start: Date; end: Date } {
   const bangkokDate = new Date(date.getTime() + BANGKOK_UTC_OFFSET_MS);
   const startUtcMs =
@@ -76,6 +78,7 @@ function getBangkokDayWindow(date: Date): { start: Date; end: Date } {
   };
 }
 
+// ตรวจสอบและแปลงค่ากลยุทธ์การจัดเส้นทาง
 function parseStrategy(value: unknown): RouteStrategy {
   if (value === undefined) return "LOWEST_COST";
   if (
@@ -87,6 +90,7 @@ function parseStrategy(value: unknown): RouteStrategy {
   throw new RequestError(400, "Unknown route strategy");
 }
 
+// ตรวจสอบข้อมูลแผนที่ผู้ใช้ส่งมายืนยัน
 function extractConfirmation(body: unknown): {
   orderIds: number[];
   strategy: RouteStrategy;
@@ -137,6 +141,7 @@ function extractConfirmation(body: unknown): {
   return { orderIds, strategy: parseStrategy(requestBody.strategy) };
 }
 
+// สรุปจำนวนงาน ระยะทาง ค่าใช้จ่าย และกำไรของแผน
 function summarize(
   tasks: readonly ProposedTask[],
   totalOrders: number
@@ -178,6 +183,7 @@ function summarize(
   };
 }
 
+// สร้างผลลัพธ์แผนพร้อมตัวเลือกของแต่ละกลยุทธ์
 function createResult(
   pendingOrders: Parameters<typeof VrpOptimizerService.optimizeRoutes>[0],
   startSequence: number,
@@ -213,6 +219,7 @@ function createResult(
   };
 }
 
+// ตรวจสอบว่าข้อผิดพลาดฐานข้อมูลสามารถลองใหม่ได้หรือไม่
 function isRetryableTransactionError(error: unknown): boolean {
   return (
     error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -323,6 +330,7 @@ router.get("/today", async (_req: Request, res: Response) => {
   }
 });
 
+// คำนวณใหม่และบันทึกใบงานที่ยืนยันแล้วลงฐานข้อมูล
 async function saveAuthoritativeTasks(
   orderIds: readonly number[],
   strategy: RouteStrategy,
